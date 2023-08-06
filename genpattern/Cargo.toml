@@ -1,0 +1,11 @@
+[package]
+name = "genpattern"
+version = "0.1.0"
+edition = "2021"
+description = "Generates expected test info from a MOD file using the modfile crate"
+license = "MIT OR Apache-2.0"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+modfile = "1.4"
