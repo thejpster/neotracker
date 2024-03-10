@@ -1,5 +1,5 @@
 //! Basic Pro Tracker module parser
-//! 
+//!
 //! Based upon https://www.eblong.com/zarf/blorb/mod-spec.txt.
 
 #![no_std]
@@ -114,6 +114,16 @@ impl<'a> Pattern<'a> {
         &self.parent.data[start..end]
     }
 
+    /// Grab one specific line from a pattern
+    pub fn line(&self, index: u8) -> Option<Line<4>> {
+        let mut iter = LineIter {
+            note: index,
+            parent: self,
+        };
+        iter.next()
+    }
+
+    /// Iterate through all the lines in a pattern
     pub fn lines(&self) -> LineIter {
         LineIter {
             note: 0,
@@ -205,40 +215,40 @@ impl Note {
         /// Conversion from period to musical note
         pub static PERIOD_NOTE_MAP: &[(u16, &str)] = &[
             (856, "C1"),
-            (808, "C1♯/D1♭"),
+            (808, "C1♯"),
             (762, "D1"),
-            (720, "D1♯/E1♭"),
+            (720, "D1♯"),
             (678, "E1"),
             (640, "F1"),
-            (604, "F1♯/G1♭"),
+            (604, "F1♯"),
             (570, "G1"),
-            (538, "G1♯/A1♭"),
+            (538, "G1♯"),
             (508, "A1"),
-            (480, "A1♯/B1♭"),
+            (480, "A1♯"),
             (453, "B1"),
             (428, "C2"),
-            (404, "C2♯/D2♭"),
+            (404, "C2♯"),
             (381, "D2"),
-            (360, "D2♯/E2♭"),
+            (360, "D2♯"),
             (339, "E2"),
             (320, "F2"),
-            (302, "F2♯/G2♭"),
+            (302, "F2♯"),
             (285, "G2"),
-            (269, "G2♯/A2♭"),
+            (269, "G2♯"),
             (254, "A2"),
-            (240, "A2♯/B2♭"),
+            (240, "A2♯"),
             (226, "B2"),
             (214, "C3"),
-            (202, "C3♯/D3♭"),
+            (202, "C3♯"),
             (190, "D3"),
-            (180, "D3♯/E3♭"),
+            (180, "D3♯"),
             (170, "E3"),
             (160, "F3"),
-            (151, "F3♯/G3♭"),
+            (151, "F3♯"),
             (143, "G3"),
-            (135, "G3♯/A3♭"),
+            (135, "G3♯"),
             (127, "A3"),
-            (120, "A3♯/B3♭"),
+            (120, "A3♯"),
             (113, "B3"),
         ];
 
@@ -334,7 +344,7 @@ impl<'a> Sample<'a> {
             repeat_length: self.repeat_length_bytes(),
             repeat_point: self.repeat_point_bytes(),
             first_pass: true,
-            position: 0
+            position: 0,
         }
     }
 }
