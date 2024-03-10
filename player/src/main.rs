@@ -235,6 +235,8 @@ fn main() -> Result<(), anyhow::Error> {
     while !STOP_PLAYING.load(Ordering::Relaxed) {
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
+    // let the buffer empty (it's probably buffered less than a second's worth)
+    std::thread::sleep(std::time::Duration::from_secs(1));
 
     Ok(())
 }
