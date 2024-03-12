@@ -213,7 +213,7 @@ fn decode_song() {
                     " {:02x} {:06} {:04x} |",
                     line.channel[ch].sample_no(),
                     line.channel[ch].period(),
-                    line.channel[ch].effect(),
+                    line.channel[ch].effect_u16(),
                 )
                 .unwrap();
             }
