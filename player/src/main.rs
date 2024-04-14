@@ -73,7 +73,7 @@ impl<'a> Player<'a> {
             // Did we have a pattern break? Jump straight there.
             if let Some(line) = self.pattern_break {
                 self.pattern_break = None;
-                self.position = self.position + 1;
+                self.position += 1;
                 self.line = line;
             }
 
@@ -104,21 +104,21 @@ impl<'a> Player<'a> {
             for (channel_num, ch) in self.channels.iter_mut().enumerate() {
                 let note = &line.channel[channel_num];
                 // Do we have a new sample to play?
-                if let Some(sample) = self.modfile.sample_info(note.sample_no()) {
-                    ch.note_period = note.period();
-                    if note.period() != 0 {
+                if note.is_empty() {
+                    print!("--- -----|");
+                } else {
+                    if let Some(sample) = self.modfile.sample_info(note.sample_no()) {
+                        if note.period() != 0 {
+                            ch.note_period = note.period();
+                        }
                         ch.volume = sample.volume();
                         ch.sample_num = note.sample_no();
                         ch.sample_position = neotracker::Fractional::default();
                     }
-                }
-                if note.is_empty() {
-                    print!("-- --- ----|");
-                } else {
                     print!(
-                        "{:02} {:3} {:04x}|",
-                        note.sample_no(),
+                        "{:3} {:02}{:03x}|",
                         note.musical_note().unwrap_or("---"),
+                        note.sample_no(),
                         note.effect_u16()
                     );
                 }
@@ -198,12 +198,9 @@ impl<'a> Player<'a> {
                         ch.note_period += u16::from(n);
                     }
                     Some(neotracker::Effect::VolumeSlide(n)) => {
-                        let xxxx = n >> 4;
-                        let yyyy = n & 0x0F;
-                        if xxxx != 0 {
-                            ch.volume = (ch.volume + xxxx).min(63);
-                        } else if yyyy != 0 {
-                            ch.volume = ch.volume.saturating_sub(yyyy);
+                        let new_volume = (ch.volume as i8) + n;
+                        if (0..=63).contains(&new_volume) {
+                            ch.volume = new_volume as u8;
                         }
                     }
                     _ => {
@@ -229,8 +226,8 @@ impl<'a> Player<'a> {
                 continue;
             }
             let integer_pos = ch.sample_position.as_index();
-            let sample_byte = sample_data.get(integer_pos).unwrap_or(&0);
-            let mut channel_value = (*sample_byte as i8) as i32;
+            let sample_byte = sample_data[integer_pos];
+            let mut channel_value = (sample_byte as i8) as i32;
             // max channel vol (64), sample range [-128,127] scaled to [-32768, 32767]
             channel_value *= 256;
             channel_value *= i32::from(ch.volume);
@@ -240,13 +237,16 @@ impl<'a> Player<'a> {
                 .clock_ticks_per_device_sample
                 .apply_period(ch.note_period);
             // loop sample if required
-            if current_sample.repeat_length() != 1 {
+            if current_sample.loops() {
                 if ch.sample_position.as_index()
                     >= (current_sample.repeat_point_bytes() + current_sample.repeat_length_bytes())
                 {
                     ch.sample_position =
                         neotracker::Fractional::new(current_sample.repeat_point_bytes() as u32);
                 }
+            } else if ch.sample_position.as_index() >= current_sample.sample_length_bytes() {
+                // stop playing sample
+                ch.note_period = 0;
             }
 
             if ch_idx == 0 || ch_idx == 3 {
@@ -255,6 +255,7 @@ impl<'a> Player<'a> {
                 right_sample += channel_value;
             }
         }
+
         (
             left_sample.clamp(-32768, 32767) as i16,
             right_sample.clamp(-32768, 32767) as i16,
@@ -276,7 +277,7 @@ fn main() -> Result<(), anyhow::Error> {
     // Check every sample
     println!("Samples:");
     for sample in player.modfile.samples() {
-        //println!("{:?}", sample);
+        println!("{:?}", sample);
         let _data = sample.raw_sample_bytes();
     }
 
@@ -287,10 +288,9 @@ fn main() -> Result<(), anyhow::Error> {
     let supported_configs_iter = device.supported_output_configs()?;
     let supported_config = supported_configs_iter
         .filter(|sc| sc.sample_format() == cpal::SampleFormat::I16)
-        .filter(|sc| sc.channels() == 2)
-        .next()
+        .find(|sc| sc.channels() == 2)
         .expect("no supported I16 config?!")
-        .with_sample_rate(cpal::SampleRate(sample_rate as u32));
+        .with_sample_rate(cpal::SampleRate(sample_rate));
     println!("Found config: {:?}", supported_config);
     let config: cpal::StreamConfig = supported_config.into();
     let stream = device.build_output_stream(

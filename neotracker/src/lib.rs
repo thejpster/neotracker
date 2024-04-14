@@ -35,7 +35,7 @@ impl<'a> ProTrackerModule<'a> {
         if data.len() < Self::MINIMUM_LENGTH {
             return Err(Error::FileTooSmall);
         }
-        if &data[Self::MK_RANGE] != &Self::MK_MAGIC {
+        if data[Self::MK_RANGE] != Self::MK_MAGIC {
             return Err(Error::WrongMagicValue);
         }
         Ok(ProTrackerModule { data })
@@ -45,7 +45,7 @@ impl<'a> ProTrackerModule<'a> {
     pub fn samples(&self) -> SampleIter {
         SampleIter {
             parent: self,
-            sample_no: 0,
+            sample_no: 1,
             file_offset: self.sample_offset(),
         }
     }
@@ -60,6 +60,7 @@ impl<'a> ProTrackerModule<'a> {
         if sample_no == 0 {
             None
         } else {
+            // `nth` is zero-indexed
             self.samples().nth(usize::from(sample_no - 1))
         }
     }
@@ -68,13 +69,9 @@ impl<'a> ProTrackerModule<'a> {
     ///
     /// Can do a direct access, but it won't return correct sample data.
     pub fn sample_info(&self, sample_no: u8) -> Option<Sample> {
-        if sample_no >= 1 && sample_no <= 30 {
-            Some(Sample {
-                parent: self,
-                sample_no: sample_no - 1,
-                // this value is wrong, but we did warn them it would be
-                file_offset: self.sample_offset(),
-            })
+        if (1..=31).contains(&sample_no) {
+            // this value is wrong, but we did warn them it would be
+            Some(Sample::new(sample_no, self.sample_offset(), self))
         } else {
             None
         }
@@ -119,6 +116,17 @@ impl<'a> ProTrackerModule<'a> {
     /// Where in the file do the samples start?
     fn sample_offset(&self) -> usize {
         Pattern::PATTERN_INFO_OFFSET + (usize::from(self.num_patterns()) * Pattern::PATTERN_LEN)
+    }
+}
+
+impl<'a> core::fmt::Debug for ProTrackerModule<'a> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ProTrackerModule")
+            .field("data", &self.data.len())
+            .field("song_length", &self.song_length())
+            .field("num_patterns", &self.num_patterns())
+            .field("sample_offset", &self.sample_offset())
+            .finish()
     }
 }
 
@@ -342,7 +350,7 @@ pub enum Effect {
     /// Set sample offset
     SampleOffset(u8) = 9,
     /// Volume slide
-    VolumeSlide(u8) = 10,
+    VolumeSlide(i8) = 10,
     /// Position jump
     PositionJump(u8) = 11,
     /// Set volume
@@ -370,7 +378,11 @@ impl Effect {
             6 => Some(Effect::VibratoSlide(arg)),
             7 => Some(Effect::Tremelo(arg)),
             9 => Some(Effect::SampleOffset(arg)),
-            10 => Some(Effect::VolumeSlide(arg)),
+            10 => Some(if arg >= 0x10 {
+                Effect::VolumeSlide((arg >> 4) as i8)
+            } else {
+                Effect::VolumeSlide(-(arg as i8))
+            }),
             11 => Some(Effect::PositionJump(arg)),
             12 => Some(Effect::SetVolume(arg)),
             13 => Some(Effect::PatternBreak(arg)),
@@ -382,12 +394,37 @@ impl Effect {
 
 /// Represents a sample
 pub struct Sample<'a> {
-    /// A zero-based indexed into the sample array
+    /// A one-based indexed into the sample table
     sample_no: u8,
+    /// A volume, from 0 to 63
+    volume: u8,
+    /// Finetune
+    finetune: u8,
     /// Where in the MOD file the sample starts
     file_offset: usize,
+    /// The repeat length
+    repeat_length: u16,
+    /// The repeat point
+    repeat_point: u16,
+    /// The sample length
+    sample_length: u16,
     /// The MOD file itself
     parent: &'a ProTrackerModule<'a>,
+}
+
+impl<'a> core::fmt::Debug for Sample<'a> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Sample")
+            .field("sample_no", &self.sample_no)
+            .field("file_offset", &self.file_offset)
+            .field("name", &core::str::from_utf8(self.name()).unwrap_or("?"))
+            .field("sample_length_bytes", &self.sample_length_bytes())
+            .field("finetune", &self.finetune())
+            .field("volume", &self.volume())
+            .field("repeat_point", &self.repeat_point_bytes())
+            .field("repeat_length", &self.repeat_length_bytes())
+            .finish()
+    }
 }
 
 impl<'a> Sample<'a> {
@@ -395,9 +432,40 @@ impl<'a> Sample<'a> {
     const SAMPLE_INFO_LEN: usize = 30;
     const SAMPLE_MAX_NAME_LEN: usize = 22;
 
+    /// Create a new sample
+    ///
+    /// The sample_no must be `1..=31`.
+    fn new(sample_no: u8, file_offset: usize, parent: &'a ProTrackerModule<'a>) -> Sample<'a> {
+        let mut s = Sample {
+            sample_no,
+            file_offset,
+            parent,
+            volume: 0,
+            finetune: 0,
+            repeat_length: 0,
+            repeat_point: 0,
+            sample_length: 0,
+        };
+        // Cache the important fields from the metadata
+        let metdata_bytes = s.metadata_bytes();
+        let sample_length = u16::from_be_bytes([metdata_bytes[22], metdata_bytes[23]]);
+        let finetune = metdata_bytes[24];
+        let volume = metdata_bytes[25];
+        let repeat_point = u16::from_be_bytes([metdata_bytes[26], metdata_bytes[27]]);
+        let repeat_length = u16::from_be_bytes([metdata_bytes[28], metdata_bytes[29]]);
+        // Now store the cached data
+        s.volume = volume;
+        s.finetune = finetune;
+        s.sample_length = sample_length;
+        s.repeat_point = repeat_point;
+        s.repeat_length = repeat_length;
+        s
+    }
+
+    /// Grab the slice of bytes corresponding to this sample's metadata.
     fn metadata_bytes(&self) -> &[u8] {
         let start =
-            Self::SAMPLE_INFO_OFFSET + (usize::from(self.sample_no) * Self::SAMPLE_INFO_LEN);
+            Self::SAMPLE_INFO_OFFSET + (usize::from(self.sample_no - 1) * Self::SAMPLE_INFO_LEN);
         let end = start + Self::SAMPLE_INFO_LEN;
         &self.parent.data[start..end]
     }
@@ -415,71 +483,86 @@ impl<'a> Sample<'a> {
 
     /// Length of the sample, in 16-bit units
     pub fn sample_length(&self) -> u16 {
-        let len: &[u8] = &self.metadata_bytes()[22..24];
-        u16::from_be_bytes(len.try_into().unwrap())
+        self.sample_length
     }
 
     /// Length of the sample in bytes
     pub fn sample_length_bytes(&self) -> usize {
-        usize::from(self.sample_length()) * 2
+        usize::from(self.sample_length * 2)
     }
 
     /// The finetune value for the sample
     pub fn finetune(&self) -> u8 {
-        self.metadata_bytes()[24]
+        self.finetune
     }
 
     /// The default volume of the sample
     pub fn volume(&self) -> u8 {
-        self.metadata_bytes()[25]
+        self.volume
+    }
+
+    /// Does this sample repeat?
+    pub fn loops(&self) -> bool {
+        self.repeat_length != 1
     }
 
     /// Where the sample should loop back to when repeating, in 16-bit units.
     pub fn repeat_point(&self) -> u16 {
-        let len: &[u8] = &self.metadata_bytes()[26..28];
-        u16::from_be_bytes(len.try_into().unwrap())
+        self.repeat_point
     }
 
     /// Where the sample should loop back to when repeating, as a byte offset.
     pub fn repeat_point_bytes(&self) -> usize {
-        usize::from(self.repeat_point()) * 2
+        usize::from(self.repeat_point * 2)
     }
 
     /// The length of the repeating portion, in 16-bit units
     pub fn repeat_length(&self) -> u16 {
-        let len: &[u8] = &self.metadata_bytes()[28..30];
-        u16::from_be_bytes(len.try_into().unwrap())
+        self.repeat_length
     }
 
     /// The length of the repeating portion, in bytes
     pub fn repeat_length_bytes(&self) -> usize {
-        usize::from(self.repeat_length()) * 2
+        usize::from(self.repeat_length * 2)
     }
 
     /// The sample as 8-bit data
     pub fn raw_sample_bytes(&self) -> &[u8] {
-        let range = self.file_offset..self.file_offset + self.sample_length_bytes();
-        &self.parent.data[range]
+        // short-cut if sample is empty
+        if self.sample_length == 0 || self.volume == 0 {
+            return &[];
+        };
+        // This is where in the file the sample lives.
+        let range = self.file_offset..(self.file_offset + self.sample_length_bytes());
+        self.parent.data.get(range).unwrap_or_else(|| {
+            // This sample goes off the end of the file. Give them as much as we
+            // can instead.
+            &self.parent.data[self.file_offset..]
+        })
     }
 
     /// Create an iterator that will hand out samples, handling looping/repeating as required.
     pub fn sample_bytes_iter(&'a self) -> SampleBytesIter<'a> {
         SampleBytesIter {
             data: self.raw_sample_bytes(),
-            repeat_length: self.repeat_length_bytes(),
-            repeat_point: self.repeat_point_bytes(),
-            first_pass: true,
+            repeat_length: self.repeat_length(),
+            repeat_point: self.repeat_point(),
             position: 0,
         }
     }
 }
 
-/// Generates the infinite 1 byte PCM samples contained within a sample.
+/// Generates the 1 byte PCM samples contained within a sample.
+///
+/// This is infinite if the sample loops.
 pub struct SampleBytesIter<'a> {
+    /// Our sample, as bytes
     data: &'a [u8],
-    repeat_point: usize,
-    repeat_length: usize,
-    first_pass: bool,
+    /// The repeat point, in words
+    repeat_point: u16,
+    /// The repeat length, in words
+    repeat_length: u16,
+    /// Our current position, in bytes
     position: usize,
 }
 
@@ -489,20 +572,18 @@ impl<'a> Iterator for SampleBytesIter<'a> {
     fn next(&mut self) -> Option<u8> {
         let sample = self.data.get(self.position).cloned();
         self.position += 1;
-        if self.first_pass {
-            if self.position >= self.data.len() {
-                self.position = self.repeat_point;
-                self.first_pass = false;
-            }
-        } else {
-            if self.position >= self.repeat_point + self.repeat_length {
-                self.position = self.repeat_point;
+        if self.repeat_length != 1 {
+            // this sample repeats
+            if self.position >= usize::from(self.repeat_point + self.repeat_length) * 2 {
+                self.position = usize::from(self.repeat_point) * 2;
             }
         }
         sample
     }
 }
 
+/// Iterates through all the samples in a module.
+///
 /// Generated by [`ProTrackerModule::samples()`].
 pub struct SampleIter<'a> {
     parent: &'a ProTrackerModule<'a>,
@@ -514,12 +595,8 @@ impl<'a> core::iter::Iterator for SampleIter<'a> {
     type Item = Sample<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.sample_no <= 30 {
-            let sample = Sample {
-                parent: self.parent,
-                sample_no: self.sample_no,
-                file_offset: self.file_offset,
-            };
+        if self.sample_no <= 31 {
+            let sample = Sample::new(self.sample_no, self.file_offset, self.parent);
             self.sample_no += 1;
             self.file_offset += sample.sample_length_bytes();
             Some(sample)
