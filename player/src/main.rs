@@ -226,7 +226,7 @@ impl<'a> Player<'a> {
                 continue;
             }
             let integer_pos = ch.sample_position.as_index();
-            let sample_byte = sample_data[integer_pos];
+            let sample_byte = sample_data.get(integer_pos).cloned().unwrap_or_default();
             let mut channel_value = (sample_byte as i8) as i32;
             // max channel vol (64), sample range [-128,127] scaled to [-32768, 32767]
             channel_value *= 256;
