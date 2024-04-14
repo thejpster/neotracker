@@ -9,6 +9,9 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+    - name: Dependencies
+      run: |
+        sudo apt-get -y update && sudo apt-get -y install build-essential pkg-config libasound2-dev 
     - name: Build
       run: |
         cargo build --examples
